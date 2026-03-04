@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mailmeteor Pro Scraper</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📧 Mailmeteor Professional Scraper</h1>
+            <p class="subtitle">Upload Excel → Bypass Blocks → Download Results</p>
+        </div>
+
+        <!-- Upload Section -->
+        <div class="upload-section">
+            <div class="upload-box" id="uploadArea">
+                <input type="file" id="excelFile" accept=".xlsx,.xls,.csv" hidden>
+                <div class="upload-icon">📂</div>
+                <div class="upload-text">Click to upload Excel file</div>
+                <div class="upload-hint">Columns: Name and Website/Domain</div>
+                <div id="fileName" class="file-name"></div>
+            </div>
+        </div>
+
+        <!-- Controls Row -->
+        <div class="controls-row">
+            <div class="control-group">
+                <label>Batch size:</label>
+                <select id="batchSize">
+                    <option value="1">1 (Slowest, safest)</option>
+                    <option value="2" selected>2 (Recommended)</option>
+                    <option value="3">3 (Fast)</option>
+                    <option value="4">4 (Very Fast - Risk)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label>Parallel Tabs:</label>
+                <select id="maxBrowsers">
+                    <option value="1">1 (Single)</option>
+                    <option value="2" selected>2 (Low)</option>
+                    <option value="3">3 (Recommended)</option>
+                    <option value="5">5 (High-Speed)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label>Delay (s):</label>
+                <select id="delayTime">
+                    <option value="2000">2 seconds</option>
+                    <option value="3000" selected>3 seconds</option>
+                    <option value="5000">5 seconds</option>
+                    <option value="10000">10 seconds</option>
+                </select>
+            </div>
+
+            <div class="button-group">
+                <button id="startBtn" class="btn btn-primary">▶ Start Scraping</button>
+                <button id="stopBtn" class="btn btn-danger" disabled>⏹ Stop</button>
+            </div>
+        </div>
+
+        <!-- Stats Grid -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <span class="stat-value" id="totalCount">0</span>
+                <span class="stat-label">Total Records</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" id="processedCount">0</span>
+                <span class="stat-label">Processed</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" id="validCount">0</span>
+                <span class="stat-label">Valid Emails</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" id="notFoundCount">0</span>
+                <span class="stat-label">Not Found</span>
+            </div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div class="progress-section">
+            <div class="progress-container">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-text" id="progressText"></div>
+        </div>
+
+        <!-- Logs and Results Grid -->
+        <div class="content-grid">
+            <!-- Activity Log -->
+            <div class="log-container">
+                <div class="log-header">
+                    <span>📋 Activity Log</span>
+                    <span class="log-count" id="logCount">0</span>
+                </div>
+                <div id="logMessages" class="log-messages"></div>
+            </div>
+
+            <!-- Results Table -->
+            <div class="results-container">
+                <div class="results-header">
+                    <h3>Results</h3>
+                    <div class="results-actions">
+                        <button id="downloadCsvBtn" class="btn btn-small btn-success" disabled>📥 CSV</button>
+                        <button id="downloadExcelBtn" class="btn btn-small btn-success" disabled>📥 Excel</button>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Row</th>
+                                <th>Name</th>
+                                <th>Email</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="resultsBody">
+                            <tr>
+                                <td colspan="4" class="empty-table">No results yet</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
