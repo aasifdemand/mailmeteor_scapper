@@ -21,56 +21,66 @@ async function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Browser Pool Management (Single Window, Multiple Tabs)
+// Browser Pool Management (Multiple Instances, Multiple Tabs)
 class BrowserPool {
   constructor() {
-    this.browser = null;
-    this.pages = [];
+    this.browsers = []; // List of { browser, pages: [{page, busy, id}] }
     this.isInitializing = false;
   }
 
-  async init(tabCount = 1) {
+  async init(browserCount = 1, tabsPerBrowser = 3) {
     if (this.isInitializing) {
-      console.log("  ⏳ Browser is already initializing, waiting...");
+      console.log("  ⏳ Pool is already initializing, waiting...");
       while (this.isInitializing) await wait(500);
       return;
     }
 
     this.isInitializing = true;
-    console.log(`\n🏗️  Initializing Browser (Tabs: ${tabCount})...`);
+    console.log(`\n🏗️  Initializing Browser Pool (${browserCount} Browsers, ${tabsPerBrowser} Tabs each)...`);
 
     // Close existing if any
     await this.closeAll();
 
     try {
-      const { browser: newBrowser, page: firstPage } = await connect({
-        headless: false,
-        args: ["--start-maximized"],
-        turnstile: true,
-        connectOption: { defaultViewport: null }
-      });
+      for (let b = 0; b < browserCount; b++) {
+        if (stopSignal) break;
+        console.log(`  🌐 Launching Browser Instance #${b + 1}...`);
+        const { browser: newBrowser, page: firstPage } = await connect({
+          headless: false,
+          args: ["--start-maximized"],
+          turnstile: true,
+          connectOption: { defaultViewport: null }
+        });
 
-      this.browser = newBrowser;
-      this.pages.push({ page: firstPage, busy: false, id: 1 });
-      console.log(`  ✅ Main tab ready.`);
+        const browserEntry = { browser: newBrowser, pages: [] };
+        browserEntry.pages.push({ page: firstPage, busy: false, id: `${b + 1}-1` });
+        console.log(`    ✅ Browser #${b + 1}: Main tab ready.`);
 
-      // Open additional tabs
-      for (let i = 1; i < tabCount; i++) {
-        const newPage = await this.browser.newPage();
-        this.pages.push({ page: newPage, busy: false, id: i + 1 });
-        console.log(`  ✅ Tab #${i + 1} ready.`);
+        // Open additional tabs
+        for (let t = 1; t < tabsPerBrowser; t++) {
+          const newPage = await newBrowser.newPage();
+          browserEntry.pages.push({ page: newPage, busy: false, id: `${b + 1}-${t + 1}` });
+          console.log(`    ✅ Browser #${b + 1}: Tab #${t + 1} ready.`);
+        }
+
+        this.browsers.push(browserEntry);
       }
 
-      console.log(`  🚀 Browser Window ready with ${this.pages.length} tabs.`);
+      console.log(`  🚀 Pool Ready: ${this.browsers.length} Browsers, ${this.getAllPages().length} Total Tabs.`);
     } catch (err) {
-      console.error(`  ❌ Failed to launch browser:`, err.message);
+      console.error(`  ❌ Failed to launch pool:`, err.message);
     } finally {
       this.isInitializing = false;
     }
   }
 
+  getAllPages() {
+    return this.browsers.flatMap(b => b.pages);
+  }
+
   async getAvailable() {
-    const pageData = this.pages.find(p => !p.busy);
+    const allPages = this.getAllPages();
+    const pageData = allPages.find(p => !p.busy);
     if (pageData) {
       pageData.busy = true;
       return pageData;
@@ -79,17 +89,23 @@ class BrowserPool {
   }
 
   async closeAll() {
-    if (this.browser) {
+    console.log("  🧹 Closing all browsers in pool...");
+    const currentBrowsers = [...this.browsers];
+    this.browsers = []; // Clear immediately to avoid re-use attempts
+
+    for (const b of currentBrowsers) {
       try {
-        await this.browser.close();
-      } catch (e) { }
+        // Kill the underlying process if possible or just close
+        await b.browser.close();
+      } catch (e) {
+        console.error("    ⚠️ Error closing a browser instance:", e.message);
+      }
     }
-    this.browser = null;
-    this.pages = [];
   }
 }
 
 const pool = new BrowserPool();
+let stopSignal = false;
 
 // Real-time Session State
 let sessionState = {
@@ -232,97 +248,105 @@ app.get("/api/scrape-status", (req, res) => {
 // Batch scrape endpoint
 app.post("/api/scrape-batch", async (req, res) => {
   try {
-    const { items, maxBrowsers } = req.body;
+    const { items, maxBrowsers, startRow } = req.body;
 
     if (!items || !Array.isArray(items)) {
       return res.status(400).json({ error: "No items provided" });
     }
 
-    console.log(`\n📦 Starting New Batch Scrape (${items.length} records, Parallel Tabs: ${maxBrowsers})`);
+    const startIndex = Math.max(0, (parseInt(startRow) || 1) - 1);
+    const subset = items.slice(startIndex);
+
+    if (subset.length === 0) {
+      return res.status(400).json({ error: `Start row (${startRow}) is beyond total items (${items.length}).` });
+    }
+
+    console.log(`\n📦 STARTING BATCH: Offset=${startIndex} (Row ${startIndex + 1}), First Item: "${subset[0]?.name || 'N/A'}"`);
+    console.log(`📦 Subset Size: ${subset.length} of ${items.length} total.`);
+
+    stopSignal = false;
 
     // Reset Session State
     sessionState = {
       active: true,
       results: [],
       total: items.length,
-      processed: 0,
+      processed: startIndex,
       items: items,
       settings: {
         batchSize: parseInt(req.body.batchSize) || 2,
-        maxBrowsers: parseInt(maxBrowsers) || 3,
+        maxBrowsers: parseInt(maxBrowsers) || 2,
         delayTime: parseInt(req.body.delayTime) || 3000
       }
     };
 
     // SEND IMMEDIATE RESPONSE
-    res.json({ success: true, message: "Scraping initializing in background", total: items.length });
+    res.json({ success: true, message: "Scraping initializing", total: subset.length });
 
     // BACKGROUND INITIALIZATION AND PROCESSING
     (async () => {
       try {
-        console.log(`  🏗️  Background Init: Launching browser with ${sessionState.settings.maxBrowsers} tabs...`);
-        await pool.init(sessionState.settings.maxBrowsers);
+        // Multi-browser architecture: User maxBrowsers is now instances (max 2)
+        const instanceCount = Math.min(2, sessionState.settings.maxBrowsers);
+        const tabsPerInstance = 3;
 
-        if (pool.pages.length === 0) {
+        await pool.init(instanceCount, tabsPerInstance);
+
+        const allTabs = pool.getAllPages();
+        if (allTabs.length === 0) {
           sessionState.active = false;
           console.error("  ❌ Background Init Failed: No tabs ready.");
           return;
         }
 
-        // Task Queue: Thread-safe worker pattern
-        const results = new Array(items.length);
         let sharedIndex = 0;
-
         const worker = async () => {
-          while (sharedIndex < items.length) {
+          while (sharedIndex < subset.length) {
+            if (stopSignal) break;
+
             const currentIndex = sharedIndex++;
-            const item = items[currentIndex];
+            const item = subset[currentIndex];
             if (!item) break;
 
             let browserData = await pool.getAvailable();
-            while (!browserData) {
+            while (!browserData && !stopSignal) {
               await wait(1000);
               browserData = await pool.getAvailable();
             }
 
+            if (stopSignal) break;
+
             try {
               const result = await scrapeWithPage(item, browserData);
               const resultObj = { ...result, row: item.row, name: item.name };
-              results[currentIndex] = resultObj;
 
               sessionState.results.push(resultObj);
               sessionState.processed++;
             } catch (e) {
               console.error(`  ❌ Critical Worker Error on ${item.name}:`, e.message);
               const errorObj = { email: "Worker Error", status: "error", row: item.row, name: item.name };
-              results[currentIndex] = errorObj;
               sessionState.results.push(errorObj);
               sessionState.processed++;
             } finally {
               const delay = sessionState.settings.delayTime;
               await wait(delay + Math.random() * 2000);
-              browserData.busy = false;
+              if (browserData) browserData.busy = false;
             }
           }
         };
 
-        // Launch parallel workers
         const workers = [];
-        const workerCount = Math.min(pool.pages.length, items.length);
-        console.log(`  🧵 Launching ${workerCount} parallel workers for ${items.length} items...`);
+        const workerCount = Math.min(allTabs.length, subset.length);
+        console.log(`  🧵 Launching ${workerCount} parallel workers...`);
 
         for (let i = 0; i < workerCount; i++) {
           workers.push(worker());
         }
 
-        if (workers.length === 0) {
-          console.warn("  ⚠️ No workers launched. (Tabs: " + pool.pages.length + ", Items: " + items.length + ")");
-        }
-
         await Promise.all(workers);
 
         sessionState.active = false;
-        console.log(`\n✅ Background session complete. Scraped ${items.length} records.`);
+        console.log(`\n✅ Background session complete/stopped.`);
       } catch (err) {
         sessionState.active = false;
         console.error("  ❌ Background Process Error:", err.message);
@@ -336,6 +360,15 @@ app.post("/api/scrape-batch", async (req, res) => {
       res.status(500).json({ error: error.message });
     }
   }
+});
+
+// Stop scraping endpoint
+app.post("/api/stop", async (req, res) => {
+  console.log("\n⏹  Stop signal received.");
+  stopSignal = true;
+  sessionState.active = false;
+  await pool.closeAll();
+  res.json({ success: true, message: "Scraping stopped" });
 });
 
 // Health check

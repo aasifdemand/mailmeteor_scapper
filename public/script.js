@@ -57,6 +57,8 @@ document.addEventListener("DOMContentLoaded", function () {
   const progressBar = document.getElementById("progressBar");
   const progressText = document.getElementById("progressText");
   const logCount = document.getElementById("logCount");
+  const startRowInput = document.getElementById("startRow");
+  const clearBtn = document.getElementById("clearBtn");
 
   // Stats elements
   const totalCountEl = document.getElementById("totalCount");
@@ -87,6 +89,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (cachedSettings.batchSize) batchSize.value = cachedSettings.batchSize;
         if (cachedSettings.maxBrowsers) maxBrowsers.value = cachedSettings.maxBrowsers;
         if (cachedSettings.delayTime) delayTime.value = cachedSettings.delayTime;
+        if (cachedSettings.startRow) startRowInput.value = cachedSettings.startRow;
       }
 
       if (items.length > 0) {
@@ -126,13 +129,39 @@ document.addEventListener("DOMContentLoaded", function () {
 
   // Button handlers
   startBtn.addEventListener("click", startScraping);
-  stopBtn.addEventListener("click", () => {
-    addLog("⏹ Requesting stop... (Wait for current tabs to finish)", "warning");
-    location.reload();
+  stopBtn.addEventListener("click", async () => {
+    addLog("⏹ Stopping scraper... please wait.", "warning");
+    stopBtn.disabled = true;
+    try {
+      await fetch(`${API_URL}/api/stop`, { method: "POST" });
+      isProcessing = false;
+      clearInterval(statusPollInterval);
+      startBtn.disabled = false;
+      addLog("🛑 Scraping stopped and browsers closed.", "info");
+      // Save current progress as next start point
+      const nextRow = results.length + 1;
+      startRowInput.value = nextRow;
+      await saveSettings();
+    } catch (e) {
+      addLog("❌ Failed to stop server cleanly", "error");
+      location.reload();
+    }
   });
 
   downloadCsvBtn.addEventListener("click", () => downloadResults("csv"));
   downloadExcelBtn.addEventListener("click", () => downloadResults("excel"));
+  clearBtn.addEventListener("click", async () => {
+    if (confirm("Clear all items and results?")) {
+      await dbSet("items", []);
+      await dbSet("results", []);
+      items = [];
+      results = [];
+      totalCountEl.textContent = 0;
+      updateStats();
+      updateResultsTable();
+      addLog("🗑️ All data cleared", "info");
+    }
+  });
 
   // File upload handler
   async function handleFileUpload(e) {
@@ -177,12 +206,22 @@ document.addEventListener("DOMContentLoaded", function () {
         const response = await fetch(`${API_URL}/api/scrape-status`);
         const session = await response.json();
 
-        if (session.results && session.results.length > results.length) {
-          // Update local results and UI
-          results = session.results;
-          await dbSet("results", results);
-          updateStats();
-          updateResultsTable();
+        if (session.results && session.results.length > 0) {
+          // Robust merge: find new results from server
+          let hasNew = false;
+          session.results.forEach(sr => {
+            // Check if we already have this row
+            if (!results.some(r => r.row === sr.row)) {
+              results.push(sr);
+              hasNew = true;
+            }
+          });
+
+          if (hasNew) {
+            await dbSet("results", results);
+            updateStats();
+            updateResultsTable();
+          }
         }
 
         if (!session.active && isProcessing) {
@@ -194,8 +233,7 @@ document.addEventListener("DOMContentLoaded", function () {
           // Re-enable UI
           startBtn.disabled = false;
           stopBtn.disabled = true;
-          downloadCsvBtn.disabled = results.length === 0;
-          downloadExcelBtn.disabled = results.length === 0;
+          updateDownloadButtons();
         }
       } catch (e) {
         console.error("Polling error:", e);
@@ -211,27 +249,29 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     isProcessing = true;
-    results = [];
-    resultsBody.innerHTML = '<tr><td colspan="4" class="empty-table">Starting session...</td></tr>';
+
+    const startRowVal = parseInt(startRowInput.value) || 1;
+
+    // Only clear results if starting from row 1
+    if (startRowVal === 1) {
+      results = [];
+      resultsBody.innerHTML = '<tr><td colspan="4" class="empty-table">Starting session...</td></tr>';
+      await dbSet("results", []);
+    } else {
+      addLog(`⏩ Resuming from row ${startRowVal}...`, "info");
+    }
 
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    downloadCsvBtn.disabled = true;
-    downloadExcelBtn.disabled = true;
+    updateDownloadButtons();
 
     const maxBrowsersVal = parseInt(maxBrowsers.value);
 
-    addLog(`🚀 Starting session with ${maxBrowsersVal} parallel tabs...`, "info");
-    addLog(`🔧 Processing ${items.length} records. Bypass: ON`, "info");
+    addLog(`🚀 Starting session: Row ${startRowVal} to ${items.length}`, "info");
+    addLog(`🔧 Parallel: 2 Browsers (6 Tabs total). Bypass: ON`, "info");
 
-    // Save settings to IndexedDB
-    const settings = {
-      batchSize: batchSize.value,
-      maxBrowsers: maxBrowsers.value,
-      delayTime: delayTime.value
-    };
-    await dbSet("settings", settings);
-    await dbSet("results", []); // Fresh start
+    // Save settings
+    await saveSettings();
 
     // Start polling for real-time updates
     startStatusPolling();
@@ -244,7 +284,8 @@ document.addEventListener("DOMContentLoaded", function () {
           items: items,
           maxBrowsers: maxBrowsersVal,
           batchSize: parseInt(batchSize.value),
-          delayTime: parseInt(delayTime.value)
+          delayTime: parseInt(delayTime.value),
+          startRow: startRowVal
         }),
       });
 
@@ -265,9 +306,17 @@ document.addEventListener("DOMContentLoaded", function () {
       isProcessing = false;
       startBtn.disabled = false;
       stopBtn.disabled = true;
-    } finally {
-      // Don't disable isProcessing here, handle it in polling or cleanup
     }
+  }
+
+  async function saveSettings() {
+    const settings = {
+      batchSize: batchSize.value,
+      maxBrowsers: maxBrowsers.value,
+      delayTime: delayTime.value,
+      startRow: startRowInput.value
+    };
+    await dbSet("settings", settings);
   }
 
   function updateStats() {
@@ -281,6 +330,13 @@ document.addEventListener("DOMContentLoaded", function () {
       progressBar.style.width = `${progress}%`;
       progressText.textContent = `Progress: ${Math.round(progress)}%`;
     }
+    updateDownloadButtons();
+  }
+
+  function updateDownloadButtons() {
+    const hasResults = results.length > 0;
+    downloadCsvBtn.disabled = !hasResults;
+    downloadExcelBtn.disabled = !hasResults;
   }
 
   // Update results table
